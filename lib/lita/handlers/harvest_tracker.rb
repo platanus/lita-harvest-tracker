@@ -28,14 +28,14 @@ module Lita
       on :start_setup_dialog, :start_setup_dialog_cb
       on :setup_dialog, :setup_dialog_cb
       on :time_entry_continue_button, :time_entry_continue_button_cb
-      on :loaded, :setup_reminders
+      on :loaded, :setup_timers
 
       def initialize(robot)
         super
         @slack_client = Slack::Web::Client.new
       end
 
-      def setup_reminders(_payload)
+      def setup_timers(_payload)
         redis.keys('*:reminder_minutes').each do |key|
           user_id = key.split(':').first
           minutes = user_info(user_id, "reminder_minutes") || "0"
@@ -44,6 +44,11 @@ module Lita
             create_timer(user_id, minutes.to_i, reminder_id)
           end
         end
+
+        redis.keys('*:auth').each do |key|
+          user_id = key.split(':').first
+          check_login(user_id) if !user_id.empty?
+        end
       end
 
       def create_timer(user_id, minutes, reminder_id)
@@ -51,13 +56,27 @@ module Lita
         reminder_start = user_info(user_id, "reminder_start")
         reminder_end = user_info(user_id, "reminder_end")
         every(minutes) do |timer|
-          timer.stop if user_info(user_id, "reminder_id") != reminder_id
+          if user_info(user_id, "reminder_id") != reminder_id || !user_info(user_id, "auth")
+            timer.stop
+          end
           next if !reminder_if_tracking && tracking?(user_id)
 
           time_start = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_start))
           time_end = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_end))
 
           status(user_id) if time_start.to_i < Time.current.to_i && time_end.to_i > Time.current.to_i
+        end
+      end
+
+      def check_login(user_id)
+        auth = JSON.parse(user_info(user_id, "auth"))
+        logged_in_date = Time.parse(user_info(user_id, "logged_in_date"))
+        future = logged_in_date + auth["expires_in"]
+
+        every(6 * 60 * 60) do
+          if (Time.current - future) < 3 * 60 * 60 * 24
+            refresh_access_token(user_id, auth["refresh_token"])
+          end
         end
       end
 
@@ -127,13 +146,13 @@ module Lita
         user_id = redis.get(state["uuid"])
         redis.del(state["uuid"])
         save_user_info(user_id, "scope", request.params["scope"])
-        refresh_access_token(user_id, request.params["code"])
+        get_access_token(user_id, request.params["code"])
         response.body << "Autenticacion realizada."
       rescue StandardError
         response.body << "Hubo un error con la autenticacion, intentalo nuevamente"
       end
 
-      def refresh_access_token(user_id, code)
+      def get_access_token(user_id, code)
         body = "code=#{code}&"\
                 "client_id=#{HARVEST_CLIENT_ID}&"\
                 "client_secret=#{HARVEST_CLIENT_SECRET}&"\
@@ -146,7 +165,26 @@ module Lita
           raise "Auth Error: #{json['error']}"
         else
           save_user_info(user_id, "auth", response.body)
+          save_user_info(user_id, "logged_in_date", Time.current)
           robot.trigger(:authorized, user_id: user_id)
+        end
+      end
+
+      def refresh_access_token(user_id, refresh_token)
+        body = "client_id=#{HARVEST_CLIENT_ID}&"\
+        "client_secret=#{HARVEST_CLIENT_SECRET}&"\
+        "refresh_token=#{refresh_token}&"\
+        "grant_type=refresh_token"
+
+        response = http.post("https://id.getharvest.com/api/v2/oauth2/token", body)
+        json = JSON.parse(response.body)
+
+        if json["error"]
+          send_message_to_user_by_id(
+            user_id,
+            "Error al refrescar tu token, por favor ingresa de nuevo"
+          )
+          reset_user(user_id)
         end
       end
 
@@ -628,15 +666,15 @@ module Lita
       end
 
       def delete_user_info(user_id, key)
-        redis.del("#{user_id}:#{key}")
+        redis.del("#{user_id}:#{key}") if user_id
       end
 
       def save_user_info(user_id, key, data)
-        redis.set("#{user_id}:#{key}", data)
+        redis.set("#{user_id}:#{key}", data) if user_id
       end
 
       def user_info(user_id, key)
-        redis.get("#{user_id}:#{key}")
+        redis.get("#{user_id}:#{key}") if user_id
       end
 
       def api_get(url, user_id)
