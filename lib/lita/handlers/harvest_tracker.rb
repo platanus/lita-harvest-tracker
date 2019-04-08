@@ -22,6 +22,8 @@ module Lita
       on :task_select, :tracking_cb
       on :confirm_start_tracking, :confirm_start_tracking_cb
       on :time_entry_stop, :time_entry_stop_cb
+      on :start_setup_dialog, :start_setup_dialog_cb
+      on :setup_dialog, :setup_dialog_cb
 
       def initialize(robot)
         super
@@ -34,7 +36,7 @@ module Lita
 
       def init_harvest(user_id)
         if user_info(user_id, "auth")
-          send_message_to_user_by_id(user_id, user_info(user_id, "login_button_message_id"))
+          send_setup_button(user_id)
         else
           send_login_button(user_id)
         end
@@ -75,6 +77,20 @@ module Lita
         save_user_info(user_id, "login_button_message_id", response["message"]["ts"])
       end
 
+      def update_message_by_id(user_id, msg_id, message)
+        im = @slack_client.im_open(
+          user: user_id
+        )
+
+        @slack_client.chat_update(
+          text: message,
+          channel: im["channel"]["id"],
+          as_user: true,
+          ts: msg_id,
+          blocks: []
+        )
+      end
+
       def login_cb(request, response)
         state = JSON.parse(request.params["state"])
         user_id = redis.get(state["uuid"])
@@ -94,12 +110,115 @@ module Lita
         response = http.post("https://id.getharvest.com/api/v2/oauth2/token", body)
         json = JSON.parse(response.body)
         if json["error"]
+          update_login_button(user_id, "Error al hacer login, inténtalo de nuevo")
           reset_user(user_id)
           raise "Auth Error: #{json['error']}"
         else
           save_user_info(user_id, "auth", response.body)
           robot.trigger(:authorized, user_id: user_id)
         end
+      end
+
+      def authorized_cb(payload)
+        user_id = payload[:user_id]
+        update_message_by_id(
+          user_id,
+          user_info(user_id, "login_button_message_id"),
+          "Sesión iniciada ✅"
+        )
+        delete_user_info(user_id, 'login_button_message_id')
+
+        init_harvest(user_id)
+      end
+
+      def send_setup_button(user_id)
+        response = @slack_client.chat_postMessage(
+          channel: user_id,
+          as_user: true,
+          blocks: [
+            {
+              "type": "actions",
+              "elements": [
+                {
+                  "type": "button",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Configurar Harvest"
+                  },
+                  "value": "true",
+                  "action_id": "start_setup_dialog"
+                }
+              ]
+            }
+          ]
+        )
+
+        save_user_info(user_id, "setup_button_message_id", response["message"]["ts"])
+      end
+
+      def start_setup_dialog_cb(payload)
+        @slack_client.dialog_open(
+          trigger_id: payload["trigger_id"],
+          dialog: {
+            callback_id: "setup_dialog",
+            title: "Configuración",
+            submit_label: "Enviar",
+            elements: [
+              {
+                type: "text",
+                label: "¿Cada cuántos minutos te debería recordar?",
+                subtype: "number",
+                name: "reminder_minutes",
+                value: 60,
+                hint: "Usa 0 para desactivar el recordatorio"
+              },
+              {
+                type: "text",
+                label: "¿Desde qué hora te debería empezar a recordar?",
+                value: "09:00",
+                name: "reminder_start"
+              },
+              {
+                type: "text",
+                label: "¿A qué hora te debería dejar de recordar?",
+                value: "18:00",
+                name: "reminder_end"
+              },
+              {
+                type: "select",
+                label: "¿Te debería recordar si ya estás trackeando?",
+                name: "reminder_if_tracking",
+                value: "no",
+                options: [
+                  {
+                    "label": "Si",
+                    "value": "si"
+                  },
+                  {
+                    "label": "No",
+                    "value": "no"
+                  }
+                ]
+              },
+            ]
+          }
+        )
+      end
+
+      def setup_dialog_cb(payload)
+        user_id = payload["user"]["id"]
+        submission = payload["submission"]
+
+        save_user_info(user_id, "reminder_minutes", submission["reminder_minutes"])
+        save_user_info(user_id, "reminder_start", submission["reminder_start"])
+        save_user_info(user_id, "reminder_end", submission["reminder_end"])
+        save_user_info(user_id, "reminder_if_tracking", submission["reminder_if_tracking"])
+        update_message_by_id(
+          user_id,
+          user_info(user_id, "setup_button_message_id"),
+          "Harvest configurado ✅"
+        )
+        delete_user_info(user_id, 'setup_button_message_id')
       end
 
       def send_list_of_assignments(response)
@@ -194,10 +313,6 @@ module Lita
         stop_time_entry(payload["user"]["id"], action["value"])
 
         status(payload["user"]["id"], "ts": payload["message"]["ts"], "channel": payload["channel"]["id"])
-      end
-
-      def authorized_cb(payload)
-        init_harvest(payload[:user_id])
       end
 
       def get_status(response)
