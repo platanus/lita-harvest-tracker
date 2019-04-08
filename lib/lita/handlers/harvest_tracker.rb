@@ -134,6 +134,18 @@ module Lita
       end
 
       def confirm_start_tracking_cb(payload)
+        project_id = user_info(payload["user"]["id"], 'selected_project')
+        task_id = user_info(payload["user"]["id"], 'selected_task')
+        time_entry = create_time_entry(payload["user"]["id"], project_id, task_id)
+
+        message = "Has empezado a trackear exitosamente en: "\
+                  "*#{time_entry['project']['name']} (#{time_entry['task']['name']})* 👍"
+        response_url = payload["response_url"]
+
+        http.post(
+          response_url,
+          { blocks: [text_block(message)] }.to_json
+        )
       end
 
       def send_authorized_message(payload)
@@ -266,6 +278,19 @@ module Lita
         response["project_assignments"]
       end
 
+      def create_time_entry(user_id, project_id, task_id)
+        payload = {
+          project_id: project_id,
+          task_id: task_id,
+          spent_date: Time.current.iso8601,
+        }
+
+        response = api_post("https://api.harvestapp.com/v2/time_entries", user_id, payload)
+        save_user_info(user_id, "last_time_entry_cache", response.to_json)
+
+        response
+      end
+
       def send_message_to_user_by_id(user_id, message)
         user = Lita::User.find_by_id(user_id)
         robot.send_message(Source.new(user: user), message) if user
@@ -296,6 +321,16 @@ module Lita
         JSON.parse(response.body)
       rescue StandardError
         send_message_to_user_by_id(user_id, "Hubo un error al obtener la información")
+      end
+
+      def api_post(url, user_id, data)
+        response = http.post(url, data) do |req|
+          req.headers = http_headers(user_id)
+        end
+
+        JSON.parse(response.body)
+      rescue StandardError
+        send_message_to_user_by_id(user_id, "Hubo un error al enviar la información")
       end
 
       def http_headers(user_id)
