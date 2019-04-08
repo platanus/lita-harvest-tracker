@@ -1,5 +1,6 @@
 require 'uri'
 require 'json'
+require 'slack-ruby-client'
 
 module Lita
   module Handlers
@@ -9,9 +10,18 @@ module Lita
       PREFIX = "harvest\s"
 
       route(/#{PREFIX}login/, :login, command: true)
-      route(/#{PREFIX}project\slist/, :send_list_of_projects, command: true)
+      route(/#{PREFIX}project\slist/, :send_list_of_assignments, command: true)
+      route(/#{PREFIX}start\stracking/, :start_tracking, command: true)
+
       http.get "/harvest-tracker-authorize", :login_cb
+
       on :authorized, :send_authorized_message
+      on :project_select, :project_select_cb
+
+      def initialize(robot)
+        super
+        @slack_client = Slack::Web::Client.new
+      end
 
       def login(response)
         state = {
@@ -50,9 +60,47 @@ module Lita
         end
       end
 
-      def send_list_of_projects(response)
-        projects = api_get("https://api.harvestapp.com/v2/projects", response.user.id)
+      def send_list_of_assignments(response)
+        projects = user_project_assignments(response.user.id)
         response.reply(projects.to_json)
+      end
+
+      def start_tracking(response)
+        blocks = assignments_blocks(response.user.id)
+
+        @slack_client.chat_postMessage(
+          channel: response.user.id,
+          as_user: true,
+          blocks: blocks
+        )
+      end
+
+      def assignments_blocks(user_id, selected_project = nil)
+        projects = assignments_options(user_id)
+        blocks = [
+          text_block("*Empieza a trackear en Harvest!*"),
+          divider_block,
+          projects_block(projects, selected_project)
+        ]
+
+        if selected_project
+          tasks = task_assignments_options(user_id, selected_project["value"])
+          blocks.push(tasks_block(tasks))
+        end
+
+        blocks
+      end
+
+      def project_select_cb(payload)
+        response_url = payload["response_url"]
+        selected_project = payload["actions"][0]["selected_option"]
+        blocks = assignments_blocks(payload["user"]["id"], selected_project)
+
+        http.post(
+          response_url,
+          { blocks: blocks }.to_json
+        )
+
       end
 
       def send_authorized_message(payload)
@@ -60,6 +108,131 @@ module Lita
       end
 
       private
+
+      def divider_block
+        {
+          "type": "divider"
+        }
+      end
+
+      def text_block(message)
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "emoji": true,
+            "text": message
+          }
+        }
+      end
+
+      def projects_block(projects, selected_project = nil)
+        block = {
+          "type": "section",
+          "block_id": "project_select_block",
+          "text": {
+            "type": "mrkdwn",
+            "text": "¿En qué proyecto estás trabajando?"
+          },
+          "accessory": {
+            "type": "static_select",
+            "placeholder": {
+              "type": "plain_text",
+              "text": "Selecciona un proyecto"
+            },
+            "action_id": "project_select",
+            "option_groups": projects
+          }
+        }
+
+        block
+      end
+
+      def tasks_block(tasks)
+        block = {
+          "type": "section",
+          "block_id": "task_select_block",
+          "text": {
+            "type": "mrkdwn",
+            "text": "¿Qué estás haciendo?"
+          },
+          "accessory": {
+            "type": "static_select",
+            "placeholder": {
+              "type": "plain_text",
+              "text": "Selecciona una tarea"
+            },
+            "action_id": "task_select",
+            "options": tasks
+          }
+        }
+
+        block
+      end
+
+      def assignments_options(user_id)
+        assignments = user_project_assignments(user_id)
+        clients = {}
+        assignments.each do |assignment|
+          client = assignment["client"]["name"]
+          clients[client] = clients[client] || []
+          clients[client].push(
+            "text": {
+              "type": "plain_text",
+              "text": assignment["project"]["name"],
+              "emoji": true
+            },
+            "value": assignment["project"]["id"].to_s
+          )
+        end
+
+        dropdown = clients.map do |client, project_options|
+          {
+            label: {
+              type: "plain_text",
+              text: client
+            },
+            options: project_options
+          }
+        end
+
+        dropdown
+      end
+
+      def task_assignments_options(user_id, project_id)
+        task_assignments = project_task_assignments(user_id, project_id)
+
+        options = task_assignments.map do |assignment|
+          {
+            "text": {
+              "type": "plain_text",
+              "text": assignment["task"]["name"]
+            },
+            "value": assignment["task"]["id"].to_s
+          }
+        end
+
+        options
+      end
+
+      def project_task_assignments(user_id, project_id)
+        project_assignments = JSON.parse(user_info(user_id, "project_assignments_cache"))
+        project = project_assignments.select do |assignment|
+          assignment["project"]["id"] == project_id.to_i
+        end
+        if !project.empty?
+          delete_user_info(user_id, "project_assignments_cache")
+          project[0]["task_assignments"]
+        else
+          []
+        end
+      end
+
+      def user_project_assignments(user_id)
+        response = api_get("https://api.harvestapp.com/v2/users/me/project_assignments", user_id)
+        save_user_info(user_id, "project_assignments_cache", response["project_assignments"].to_json)
+        response["project_assignments"]
+      end
 
       def send_message_to_user_by_id(user_id, message)
         user = Lita::User.find_by_id(user_id)
@@ -69,6 +242,10 @@ module Lita
       def reset_user(user_id)
         keys = redis.keys(user_id)
         redis.del(*keys)
+      end
+
+      def delete_user_info(user_id, key)
+        redis.del("#{user_id}:#{key}")
       end
 
       def save_user_info(user_id, key, data)
