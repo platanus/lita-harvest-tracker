@@ -9,14 +9,14 @@ module Lita
       HARVEST_CLIENT_SECRET = ENV.fetch("HARVEST_OAUTH_CLIENT_SECRET")
       PREFIX = "harvest\s"
 
-      route(/#{PREFIX}login/, :login, command: true)
+      route(/#{PREFIX}setup/, :setup, command: true)
       route(/#{PREFIX}project\slist/, :send_list_of_assignments, command: true)
       route(/#{PREFIX}start\stracking/, :start_tracking, command: true)
       route(/#{PREFIX}status/, :get_status, command: true)
 
       http.get "/harvest-tracker-authorize", :login_cb
 
-      on :authorized, :send_authorized_message
+      on :authorized, :authorized_cb
       on :project_select, :tracking_cb
       on :task_select, :tracking_cb
       on :confirm_start_tracking, :confirm_start_tracking_cb
@@ -27,14 +27,47 @@ module Lita
         @slack_client = Slack::Web::Client.new
       end
 
-      def login(response)
+      def setup(response)
+        init_harvest(response.user.id)
+      end
+
+      def init_harvest(user_id)
+        if user_info(user_id, "auth")
+          send_message_to_user_by_id(user_id, user_info(user_id, "login_button_message_id"))
+        else
+          send_login_button(user_id)
+        end
+      end
+
+
+      def send_login_button(user_id)
         state = {
           uuid: SecureRandom.uuid
         }
-        redis.set(state[:uuid], response.user.id)
-        response.reply(
-          "https://id.getharvest.com/oauth2/authorize?client_id=#{HARVEST_CLIENT_ID}&response_type=code&state=#{state.to_json}"
+        redis.set(state[:uuid], user_id)
+        url = "https://id.getharvest.com/oauth2/authorize?client_id=#{HARVEST_CLIENT_ID}&response_type=code&state=#{state.to_json}"
+
+        response = @slack_client.chat_postMessage(
+          channel: user_id,
+          as_user: true,
+          blocks: [
+            {
+              "type": "actions",
+              "elements": [
+                {
+                  "type": "button",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Iniciar Sesión con Harvest"
+                  },
+                  "url": url
+                }
+              ]
+            }
+          ]
         )
+
+        save_user_info(user_id, "login_button_message_id", response["message"]["ts"])
       end
 
       def login_cb(request, response)
@@ -158,8 +191,8 @@ module Lita
         status(payload["user"]["id"], "ts": payload["message"]["ts"], "channel": payload["channel"]["id"])
       end
 
-      def send_authorized_message(payload)
-        send_message_to_user_by_id(payload[:user_id], user_info(payload[:user_id], "auth"))
+      def authorized_cb(payload)
+        init_harvest(payload[:user_id])
       end
 
       def get_status(response)
