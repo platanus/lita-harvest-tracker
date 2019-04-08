@@ -177,6 +177,11 @@ module Lita
       end
 
       def start_setup_dialog_cb(payload)
+        reminder_minutes = user_info(payload["user"]["id"], "reminder_minutes") || 60
+        reminder_start = user_info(payload["user"]["id"], "reminder_start") || '09:00'
+        reminder_end = user_info(payload["user"]["id"], "reminder_end") || '18:00'
+        reminder_if_tracking = user_info(payload["user"]["id"], "reminder_if_tracking") || 'no'
+
         @slack_client.dialog_open(
           trigger_id: payload["trigger_id"],
           dialog: {
@@ -189,26 +194,26 @@ module Lita
                 label: "¿Cada cuántos minutos te debería recordar?",
                 subtype: "number",
                 name: "reminder_minutes",
-                value: 60,
+                value: reminder_minutes,
                 hint: "Usa 0 para desactivar el recordatorio"
               },
               {
                 type: "text",
                 label: "¿Desde qué hora te debería empezar a recordar?",
-                value: "09:00",
+                value: reminder_start,
                 name: "reminder_start"
               },
               {
                 type: "text",
                 label: "¿A qué hora te debería dejar de recordar?",
-                value: "18:00",
+                value: reminder_end,
                 name: "reminder_end"
               },
               {
                 type: "select",
                 label: "¿Te debería recordar si ya estás trackeando?",
                 name: "reminder_if_tracking",
-                value: "no",
+                value: reminder_if_tracking,
                 options: [
                   {
                     "label": "Si",
@@ -219,7 +224,7 @@ module Lita
                     "value": "no"
                   }
                 ]
-              },
+              }
             ]
           }
         )
