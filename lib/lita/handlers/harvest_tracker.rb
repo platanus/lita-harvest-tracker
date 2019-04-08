@@ -2,6 +2,7 @@ require 'uri'
 require 'json'
 require 'slack-ruby-client'
 require 'time'
+require 'ostruct'
 
 module Lita
   module Handlers
@@ -19,6 +20,7 @@ module Lita
       http.get "/harvest-tracker-authorize", :login_cb
 
       on :authorized, :authorized_cb
+      on :start_tracking, :start_tracking
       on :project_select, :tracking_cb
       on :task_select, :tracking_cb
       on :confirm_start_tracking, :confirm_start_tracking_cb
@@ -37,7 +39,6 @@ module Lita
           user_id = key.split(':').first
           minutes = user_info(user_id, "reminder_minutes") || "0"
           reminder_id = user_info(user_id, "reminder_id")
-
           if minutes.to_i.positive?
             create_timer(user_id, minutes.to_i, reminder_id)
           end
@@ -48,15 +49,14 @@ module Lita
         reminder_if_tracking = user_info(user_id, "reminder_if_tracking") == "si"
         reminder_start = user_info(user_id, "reminder_start")
         reminder_end = user_info(user_id, "reminder_end")
-
-        every(minutes * 60) do |timer|
-          time_start = Time.parse(Time.now.strftime('%Y-%m-%d ' + reminder_start))
-          time_end = Time.parse(Time.now.strftime('%Y-%m-%d ' + reminder_end))
-
+        every(minutes) do |timer|
           timer.stop if user_info(user_id, "reminder_id") != reminder_id
           next if !reminder_if_tracking && tracking?(user_id)
 
-          status(user_id) if time_start.to_i < Time.now.to_i && time_end.to_i < Time.now.to_i
+          time_start = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_start))
+          time_end = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_end))
+
+          status(user_id) if time_start.to_i < Time.current.to_i && time_end.to_i > Time.current.to_i
         end
       end
 
@@ -267,11 +267,18 @@ module Lita
       end
 
       def start_tracking(response)
-        delete_user_info(response.user.id, 'selected_project')
-        delete_user_info(response.user.id, 'selected_task')
-        blocks = assignments_blocks(response.user.id)
+        payload = OpenStruct.new(response)
+        user_id = payload["user"]["id"]
+
+        start_tracking_cb(user_id)
+      end
+
+      def start_tracking_cb(user_id)
+        delete_user_info(user_id, 'selected_project')
+        delete_user_info(user_id, 'selected_task')
+        blocks = assignments_blocks(user_id)
         @slack_client.chat_postMessage(
-          channel: response.user.id,
+          channel: user_id,
           as_user: true,
           blocks: blocks
         )
