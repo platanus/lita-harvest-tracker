@@ -9,6 +9,7 @@ module Lita
       PREFIX = "harvest\s"
 
       route(/#{PREFIX}login/, :login, command: true)
+      route(/#{PREFIX}project\slist/, :send_list_of_projects, command: true)
       http.get "/harvest-tracker-authorize", :login_cb
       on :authorized, :send_authorized_message
 
@@ -49,8 +50,11 @@ module Lita
         end
       end
 
-      def send_authorized_message
-        send_message_to_user_by_id(payload[:user_id], user_info(user_id, "auth"))
+      def send_list_of_projects(response)
+        projects = api_get("https://api.harvestapp.com/v2/projects", response.user.id)
+        response.reply(projects.to_json)
+      end
+
       def send_authorized_message(payload)
         send_message_to_user_by_id(payload[:user_id], user_info(payload[:user_id], "auth"))
       end
@@ -73,6 +77,28 @@ module Lita
 
       def user_info(user_id, key)
         redis.get("#{user_id}:#{key}")
+      end
+
+      def api_get(url, user_id)
+        response = http.get(url) do |req|
+          req.headers = http_headers(user_id)
+        end
+
+        JSON.parse(response.body)
+      rescue StandardError
+        send_message_to_user_by_id(user_id, "Hubo un error al obtener la información")
+      end
+
+      def http_headers(user_id)
+        auth = JSON.parse(user_info(user_id, "auth"))
+        harvest_account_id = user_info(user_id, "scope").delete_prefix("harvest:")
+        http_headers = {
+          "Authorization": "Bearer #{auth['access_token']}",
+          "Harvest-Account-Id": harvest_account_id,
+          "User-Agent": "Harvest Ham (guillermo@platan.us)"
+        }
+
+        http_headers
       end
     end
 
