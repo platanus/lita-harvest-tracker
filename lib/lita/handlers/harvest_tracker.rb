@@ -12,6 +12,7 @@ module Lita
       route(/#{PREFIX}login/, :login, command: true)
       route(/#{PREFIX}project\slist/, :send_list_of_assignments, command: true)
       route(/#{PREFIX}start\stracking/, :start_tracking, command: true)
+      route(/#{PREFIX}status/, :get_status, command: true)
 
       http.get "/harvest-tracker-authorize", :login_cb
 
@@ -152,6 +153,19 @@ module Lita
         send_message_to_user_by_id(payload[:user_id], user_info(payload[:user_id], "auth"))
       end
 
+      def get_status(response)
+        loading_msg = send_message_to_user_by_id(response.user.id, "Obteniendo la información... ⏳")
+        time_entries = time_entries(response.user.id, true)
+        message = !time_entries.empty? ? time_entries.to_s : "No estás trackeando nada en estos momentos"
+
+        @slack_client.chat_update(
+          channel: loading_msg["channel"],
+          ts: loading_msg["ts"],
+          as_user: true,
+          text: message
+        )
+      end
+
       private
 
       def divider_block
@@ -289,6 +303,12 @@ module Lita
         save_user_info(user_id, "last_time_entry_cache", response.to_json)
 
         response
+      end
+
+      def time_entries(user_id, running = true)
+        is_running_param = running ? "?is_running=#{running}" : ""
+        response = api_get("https://api.harvestapp.com/v2/time_entries#{is_running_param}", user_id)
+        response["time_entries"]
       end
 
       def send_message_to_user_by_id(user_id, message)
