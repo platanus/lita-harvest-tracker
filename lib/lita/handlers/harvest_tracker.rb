@@ -227,6 +227,7 @@ module Lita
       end
 
       def start_setup_dialog_cb(payload)
+        server_time = Time.current.strftime('%H:%M')
         reminder_minutes = user_info(payload["user"]["id"], "reminder_minutes") || 60
         reminder_start = user_info(payload["user"]["id"], "reminder_start") || '09:00'
         reminder_end = user_info(payload["user"]["id"], "reminder_end") || '18:00'
@@ -251,13 +252,15 @@ module Lita
                 type: "text",
                 label: "¿Desde qué hora te debería empezar a recordar?",
                 value: reminder_start,
-                name: "reminder_start"
+                name: "reminder_start",
+                hint: "La hora del servidor es: #{server_time}"
               },
               {
                 type: "text",
                 label: "¿A qué hora te debería dejar de recordar?",
                 value: reminder_end,
-                name: "reminder_end"
+                name: "reminder_end",
+                hint: "La hora del servidor es: #{server_time}"
               },
               {
                 type: "select",
