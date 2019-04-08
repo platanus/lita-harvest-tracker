@@ -1,6 +1,7 @@
 require 'uri'
 require 'json'
 require 'slack-ruby-client'
+require 'time'
 
 module Lita
   module Handlers
@@ -44,9 +45,18 @@ module Lita
       end
 
       def create_timer(user_id, minutes, reminder_id)
+        reminder_if_tracking = user_info(user_id, "reminder_if_tracking") == "si"
+        reminder_start = user_info(user_id, "reminder_start")
+        reminder_end = user_info(user_id, "reminder_end")
+
         every(minutes * 60) do |timer|
+          time_start = Time.parse(Time.now.strftime('%Y-%m-%d ' + reminder_start))
+          time_end = Time.parse(Time.now.strftime('%Y-%m-%d ' + reminder_end))
+
           timer.stop if user_info(user_id, "reminder_id") != reminder_id
-          status(user_id)
+          next if !reminder_if_tracking && tracking?(user_id)
+
+          status(user_id) if time_start.to_i < Time.now.to_i && time_end.to_i < Time.now.to_i
         end
       end
 
@@ -538,6 +548,10 @@ module Lita
         is_running_param = running ? "?is_running=#{running}" : ""
         response = api_get("https://api.harvestapp.com/v2/time_entries#{is_running_param}", user_id)
         response["time_entries"]
+      end
+
+      def tracking?(user_id)
+        !time_entries(user_id).empty?
       end
 
       def send_message_to_user_by_id(user_id, message)
