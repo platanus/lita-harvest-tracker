@@ -16,7 +16,9 @@ module Lita
       http.get "/harvest-tracker-authorize", :login_cb
 
       on :authorized, :send_authorized_message
-      on :project_select, :project_select_cb
+      on :project_select, :tracking_cb
+      on :task_select, :tracking_cb
+      on :confirm_start_tracking, :confirm_start_tracking_cb
 
       def initialize(robot)
         super
@@ -66,8 +68,9 @@ module Lita
       end
 
       def start_tracking(response)
+        delete_user_info(response.user.id, 'selected_project')
+        delete_user_info(response.user.id, 'selected_task')
         blocks = assignments_blocks(response.user.id)
-
         @slack_client.chat_postMessage(
           channel: response.user.id,
           as_user: true,
@@ -75,32 +78,62 @@ module Lita
         )
       end
 
-      def assignments_blocks(user_id, selected_project = nil)
+      def assignments_blocks(user_id)
+        selected_project = user_info(user_id, 'selected_project')
+        selected_task = user_info(user_id, 'selected_task')
         projects = assignments_options(user_id)
         blocks = [
           text_block("*Empieza a trackear en Harvest!*"),
           divider_block,
-          projects_block(projects, selected_project)
+          projects_block(projects)
         ]
 
         if selected_project
-          tasks = task_assignments_options(user_id, selected_project["value"])
+          tasks = task_assignments_options(user_id, selected_project)
           blocks.push(tasks_block(tasks))
+        end
+
+        if selected_task
+          blocks.push(
+            "type": "actions",
+            "block_id": "start_tracking_button_block",
+            "elements": [{
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Empezar!"
+              },
+              "value": "confirm",
+              "action_id": "confirm_start_tracking"
+            }]
+          )
         end
 
         blocks
       end
 
-      def project_select_cb(payload)
+      def tracking_cb(payload)
+        action = payload["actions"][0]
+        case action["block_id"]
+        when "project_select_block"
+          delete_user_info(payload["user"]["id"], 'selected_task')
+          selected_project = action["selected_option"]&.dig("value")
+          save_user_info(payload["user"]["id"], 'selected_project', selected_project)
+        when "task_select_block"
+          selected_task = action["selected_option"]&.dig("value")
+          save_user_info(payload["user"]["id"], 'selected_task', selected_task)
+        end
+
         response_url = payload["response_url"]
-        selected_project = payload["actions"][0]["selected_option"]
-        blocks = assignments_blocks(payload["user"]["id"], selected_project)
+        blocks = assignments_blocks(payload["user"]["id"])
 
         http.post(
           response_url,
           { blocks: blocks }.to_json
         )
+      end
 
+      def confirm_start_tracking_cb(payload)
       end
 
       def send_authorized_message(payload)
@@ -120,13 +153,12 @@ module Lita
           "type": "section",
           "text": {
             "type": "mrkdwn",
-            "emoji": true,
             "text": message
           }
         }
       end
 
-      def projects_block(projects, selected_project = nil)
+      def projects_block(projects)
         block = {
           "type": "section",
           "block_id": "project_select_block",
@@ -154,7 +186,7 @@ module Lita
           "block_id": "task_select_block",
           "text": {
             "type": "mrkdwn",
-            "text": "¿Qué estás haciendo?"
+            "text": "¿Qué tipo de tarea?"
           },
           "accessory": {
             "type": "static_select",
