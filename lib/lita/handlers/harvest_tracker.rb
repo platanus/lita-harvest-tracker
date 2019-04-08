@@ -27,6 +27,7 @@ module Lita
       on :time_entry_stop, :time_entry_stop_cb
       on :start_setup_dialog, :start_setup_dialog_cb
       on :setup_dialog, :setup_dialog_cb
+      on :time_entry_continue_button, :time_entry_continue_button_cb
       on :loaded, :setup_reminders
 
       def initialize(robot)
@@ -368,13 +369,15 @@ module Lita
 
       def status(user_id, msg = nil)
         loading_msg = send_message_to_user_by_id(user_id, "Obteniendo la información... ⏳") unless msg
-        time_entries = time_entries(user_id, true)
+        time_entries = time_entries(user_id)
         blocks = []
 
         if time_entries.empty?
+          last_time_entries = time_entries(user_id, false)
           blocks.push(
             text_block("*No estás trackeando nada en este momento...*"),
-            start_tracking_button_block
+            start_tracking_button_block,
+            *time_entries_blocks(last_time_entries)
           )
         else
           blocks.push(text_block("*Estás trackeando...*"), *time_entries_blocks(time_entries))
@@ -385,6 +388,24 @@ module Lita
           ts: msg&.dig(:ts) || loading_msg["ts"],
           as_user: true,
           blocks: blocks
+        )
+      end
+
+      def time_entry_continue_button_cb(payload)
+        value = JSON.parse(payload["actions"][0]["value"])
+        task_id = value["task_id"]
+        project_id = value["project_id"]
+
+        time_entry = create_time_entry(payload["user"]["id"], project_id, task_id)
+
+        message = "Has empezado a trackear exitosamente en: "\
+                  "*#{time_entry['client']['name']} - #{time_entry['project']['name']} "\
+                  "(#{time_entry['task']['name']})* 👍"
+        response_url = payload["response_url"]
+
+        http.post(
+          response_url,
+          { blocks: [text_block(message)] }.to_json
         )
       end
 
@@ -450,8 +471,33 @@ module Lita
         block
       end
 
-      def time_entries_blocks(time_entries)
-        time_entries.map do |time_entry|
+      def time_entries_blocks(time_entries, limit = 5)
+        time_entries.first(limit).map do |time_entry|
+          accessory = if time_entry["is_running"]
+                        {
+                          "type": "button",
+                          "text": {
+                            "type": "plain_text",
+                            "text": "Detener"
+                          },
+                          "action_id": "time_entry_stop",
+                          "value": time_entry["id"].to_s
+                        }
+                      else
+                        {
+                          "type": "button",
+                          "text": {
+                            "type": "plain_text",
+                            "text": "Continuar"
+                          },
+                          "action_id": "time_entry_continue_button",
+                          "value": {
+                            task_id: time_entry["task"]["id"].to_s,
+                            project_id: time_entry["project"]["id"].to_s
+                          }.to_json
+                        }
+                      end
+
           {
             "type": "section",
             "text": {
@@ -459,15 +505,7 @@ module Lita
               "text": "#{time_entry['client']['name']} - #{time_entry['project']['name']} " \
               "(#{time_entry['task']['name']}) - #{time_entry['hours']} Horas"
             },
-            "accessory": {
-              "type": "button",
-              "text": {
-                "type": "plain_text",
-                "text": "Detener"
-              },
-              "action_id": "time_entry_stop",
-              "value": time_entry["id"].to_s
-            }
+            "accessory": accessory
           }
         end
       end
@@ -556,7 +594,7 @@ module Lita
         payload = {
           project_id: project_id,
           task_id: task_id,
-          spent_date: Time.current.iso8601,
+          spent_date: Time.current.iso8601
         }
 
         response = api_post("https://api.harvestapp.com/v2/time_entries", user_id, payload)
@@ -569,9 +607,9 @@ module Lita
         api_patch("https://api.harvestapp.com/v2/time_entries/#{time_entry_id}/stop", user_id)
       end
 
-      def time_entries(user_id, running = true)
-        is_running_param = running ? "?is_running=#{running}" : ""
-        response = api_get("https://api.harvestapp.com/v2/time_entries#{is_running_param}", user_id)
+      def time_entries(user_id, running = true, per_page = 5)
+        params = running ? "?is_running=#{running}&per_page=#{per_page}" : "?per_page=#{per_page}"
+        response = api_get("https://api.harvestapp.com/v2/time_entries#{params}", user_id)
         response["time_entries"]
       end
 
