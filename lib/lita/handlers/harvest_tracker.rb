@@ -24,10 +24,30 @@ module Lita
       on :time_entry_stop, :time_entry_stop_cb
       on :start_setup_dialog, :start_setup_dialog_cb
       on :setup_dialog, :setup_dialog_cb
+      on :loaded, :setup_reminders
 
       def initialize(robot)
         super
         @slack_client = Slack::Web::Client.new
+      end
+
+      def setup_reminders(_payload)
+        redis.keys('*:reminder_minutes').each do |key|
+          user_id = key.split(':').first
+          minutes = user_info(user_id, "reminder_minutes") || "0"
+          reminder_id = user_info(user_id, "reminder_id")
+
+          if minutes.to_i.positive?
+            create_timer(user_id, minutes.to_i, reminder_id)
+          end
+        end
+      end
+
+      def create_timer(user_id, minutes, reminder_id)
+        every(minutes * 60) do |timer|
+          timer.stop if user_info(user_id, "reminder_id") != reminder_id
+          status(user_id)
+        end
       end
 
       def setup(response)
@@ -208,16 +228,21 @@ module Lita
       def setup_dialog_cb(payload)
         user_id = payload["user"]["id"]
         submission = payload["submission"]
+        reminder_id = SecureRandom.uuid
 
         save_user_info(user_id, "reminder_minutes", submission["reminder_minutes"])
         save_user_info(user_id, "reminder_start", submission["reminder_start"])
         save_user_info(user_id, "reminder_end", submission["reminder_end"])
         save_user_info(user_id, "reminder_if_tracking", submission["reminder_if_tracking"])
+        save_user_info(user_id, "reminder_id", reminder_id)
         update_message_by_id(
           user_id,
           user_info(user_id, "setup_button_message_id"),
           "Harvest configurado ✅"
         )
+
+        create_timer(user_id, submission["reminder_minutes"].to_i, reminder_id)
+
         delete_user_info(user_id, 'setup_button_message_id')
       end
 
