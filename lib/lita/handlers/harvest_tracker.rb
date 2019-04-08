@@ -60,6 +60,7 @@ module Lita
             timer.stop
           end
           next if !reminder_if_tracking && tracking?(user_id)
+          next if Time.current.saturday? || Time.current.sunday?
 
           time_start = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_start))
           time_end = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_end))
