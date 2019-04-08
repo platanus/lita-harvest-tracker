@@ -20,6 +20,7 @@ module Lita
       on :project_select, :tracking_cb
       on :task_select, :tracking_cb
       on :confirm_start_tracking, :confirm_start_tracking_cb
+      on :time_entry_stop, :time_entry_stop_cb
 
       def initialize(robot)
         super
@@ -140,7 +141,8 @@ module Lita
         time_entry = create_time_entry(payload["user"]["id"], project_id, task_id)
 
         message = "Has empezado a trackear exitosamente en: "\
-                  "*#{time_entry['project']['name']} (#{time_entry['task']['name']})* 👍"
+                  "*#{time_entry['client']['name']} - #{time_entry['project']['name']} "\
+                  "(#{time_entry['task']['name']})* 👍"
         response_url = payload["response_url"]
 
         http.post(
@@ -149,20 +151,38 @@ module Lita
         )
       end
 
+      def time_entry_stop_cb(payload)
+        action = payload["actions"][0]
+        stop_time_entry(payload["user"]["id"], action["value"])
+
+        status(payload["user"]["id"], "ts": payload["message"]["ts"], "channel": payload["channel"]["id"])
+      end
+
       def send_authorized_message(payload)
         send_message_to_user_by_id(payload[:user_id], user_info(payload[:user_id], "auth"))
       end
 
       def get_status(response)
-        loading_msg = send_message_to_user_by_id(response.user.id, "Obteniendo la información... ⏳")
-        time_entries = time_entries(response.user.id, true)
-        message = !time_entries.empty? ? time_entries.to_s : "No estás trackeando nada en estos momentos"
+        status(response.user.id)
+      end
+
+      def status(user_id, msg = nil)
+        loading_msg = send_message_to_user_by_id(user_id, "Obteniendo la información... ⏳") unless msg
+        time_entries = time_entries(user_id, true)
+        blocks = []
+
+        if time_entries.empty?
+          message = "No estás trackeando nada en estos momentos"
+        else
+          blocks.push(text_block("*Estás trackeando...*"), *time_entries_blocks(time_entries))
+        end
 
         @slack_client.chat_update(
-          channel: loading_msg["channel"],
-          ts: loading_msg["ts"],
+          channel: msg&.dig(:channel) || loading_msg["channel"],
+          ts: msg&.dig(:ts) || loading_msg["ts"],
           as_user: true,
-          text: message
+          text: message,
+          blocks: blocks
         )
       end
 
@@ -226,6 +246,28 @@ module Lita
         }
 
         block
+      end
+
+      def time_entries_blocks(time_entries)
+        time_entries.map do |time_entry|
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "#{time_entry['client']['name']} - #{time_entry['project']['name']} " \
+              "(#{time_entry['task']['name']}) - #{time_entry['hours']} Horas"
+            },
+            "accessory": {
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "Detener"
+              },
+              "action_id": "time_entry_stop",
+              "value": time_entry["id"].to_s
+            }
+          }
+        end
       end
 
       def assignments_options(user_id)
@@ -305,6 +347,10 @@ module Lita
         response
       end
 
+      def stop_time_entry(user_id, time_entry_id)
+        api_patch("https://api.harvestapp.com/v2/time_entries/#{time_entry_id}/stop", user_id)
+      end
+
       def time_entries(user_id, running = true)
         is_running_param = running ? "?is_running=#{running}" : ""
         response = api_get("https://api.harvestapp.com/v2/time_entries#{is_running_param}", user_id)
@@ -351,6 +397,16 @@ module Lita
         JSON.parse(response.body)
       rescue StandardError
         send_message_to_user_by_id(user_id, "Hubo un error al enviar la información")
+      end
+
+      def api_patch(url, user_id)
+        response = http.patch(url) do |req|
+          req.headers = http_headers(user_id)
+        end
+
+        JSON.parse(response.body)
+      rescue StandardError
+        send_message_to_user_by_id(user_id, "Hubo un error al obtener la información")
       end
 
       def http_headers(user_id)
