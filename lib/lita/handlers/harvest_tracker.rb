@@ -55,7 +55,7 @@ module Lita
         reminder_if_tracking = user_info(user_id, "reminder_if_tracking") == "si"
         reminder_start = user_info(user_id, "reminder_start")
         reminder_end = user_info(user_id, "reminder_end")
-        every(minutes) do |timer|
+        every(minutes * 60) do |timer|
           if user_info(user_id, "reminder_id") != reminder_id || !user_info(user_id, "auth")
             timer.stop
           end
@@ -244,7 +244,7 @@ module Lita
                 subtype: "number",
                 name: "reminder_minutes",
                 value: reminder_minutes,
-                hint: "Usa 0 para desactivar el recordatorio"
+                hint: "Usa 0 para desactivar el recordatorio. 5 minutos como mínimo."
               },
               {
                 type: "text",
@@ -283,8 +283,17 @@ module Lita
         user_id = payload["user"]["id"]
         submission = payload["submission"]
         reminder_id = SecureRandom.uuid
+        minutes = submission["reminder_minutes"].to_i < 5 ? 5 : submission["reminder_minutes"]
+        if submission["reminder_start"].to_i > submission["reminder_end"].to_i
+          send_message_to_user_by_id(
+            user_id,
+            "La hora de inicio no puede ser menor que la hora de termino. Inténtalo de nuevo."
+          )
 
-        save_user_info(user_id, "reminder_minutes", submission["reminder_minutes"])
+          return
+        end
+
+        save_user_info(user_id, "reminder_minutes", minutes)
         save_user_info(user_id, "reminder_start", submission["reminder_start"])
         save_user_info(user_id, "reminder_end", submission["reminder_end"])
         save_user_info(user_id, "reminder_if_tracking", submission["reminder_if_tracking"])
