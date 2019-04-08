@@ -10,6 +10,7 @@ module Lita
       PREFIX = "harvest\s"
 
       route(/#{PREFIX}setup/, :setup, command: true)
+      route(/#{PREFIX}logout/, :logout, command: true)
       route(/#{PREFIX}project\slist/, :send_list_of_assignments, command: true)
       route(/#{PREFIX}start\stracking/, :start_tracking, command: true)
       route(/#{PREFIX}status/, :get_status, command: true)
@@ -39,6 +40,10 @@ module Lita
         end
       end
 
+      def logout(response)
+        reset_user(response.user.id)
+        send_message_to_user_by_id(response.user.id, "Se ha cerrado tu sesión.")
+      end
 
       def send_login_button(user_id)
         state = {
@@ -396,8 +401,8 @@ module Lita
       end
 
       def reset_user(user_id)
-        keys = redis.keys(user_id)
-        redis.del(*keys)
+        keys = redis.keys(user_id + '*')
+        redis.del(*keys) unless keys.empty?
       end
 
       def delete_user_info(user_id, key)
