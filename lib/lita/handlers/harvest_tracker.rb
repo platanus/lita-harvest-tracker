@@ -302,7 +302,7 @@ module Lita
         if selected_task
           blocks.push(
             "type": "actions",
-            "block_id": "start_tracking_button_block",
+            "block_id": "confirm_start_tracking_block",
             "elements": [{
               "type": "button",
               "text": {
@@ -372,7 +372,10 @@ module Lita
         blocks = []
 
         if time_entries.empty?
-          message = "No estás trackeando nada en estos momentos"
+          blocks.push(
+            text_block("*No estás trackeando nada en este momento...*"),
+            start_tracking_button_block
+          )
         else
           blocks.push(text_block("*Estás trackeando...*"), *time_entries_blocks(time_entries))
         end
@@ -381,7 +384,6 @@ module Lita
           channel: msg&.dig(:channel) || loading_msg["channel"],
           ts: msg&.dig(:ts) || loading_msg["ts"],
           as_user: true,
-          text: message,
           blocks: blocks
         )
       end
@@ -468,6 +470,22 @@ module Lita
             }
           }
         end
+      end
+
+      def start_tracking_button_block
+        {
+          "type": "actions",
+          "block_id": "start_tracking_button_block",
+          "elements": [{
+            "type": "button",
+            "text": {
+              "type": "plain_text",
+              "text": "Empezar a trackear"
+            },
+            "value": "confirm",
+            "action_id": "start_tracking"
+          }]
+        }
       end
 
       def assignments_options(user_id)
