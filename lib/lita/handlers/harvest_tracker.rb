@@ -329,7 +329,10 @@ module Lita
       end
 
       def start_tracking(response)
-        user_id = response&.user&.id || response["user"]["id"]
+        user_id = response.user.id
+        start_tracking_cb(user_id)
+      rescue StandardError
+        user_id = response["user"]["id"]
         start_tracking_cb(user_id)
       end
 
