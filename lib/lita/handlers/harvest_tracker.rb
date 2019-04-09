@@ -40,9 +40,7 @@ module Lita
           user_id = key.split(':').first
           minutes = user_info(user_id, "reminder_minutes") || "0"
           reminder_id = user_info(user_id, "reminder_id")
-          if minutes.to_i.positive?
-            create_timer(user_id, minutes.to_i, reminder_id)
-          end
+          create_timer(user_id, minutes.to_i, reminder_id)
         end
 
         redis.keys('*:auth').each do |key|
@@ -55,6 +53,9 @@ module Lita
         reminder_if_tracking = user_info(user_id, "reminder_if_tracking") == "si"
         reminder_start = user_info(user_id, "reminder_start")
         reminder_end = user_info(user_id, "reminder_end")
+        return if minutes == "0"
+
+        minutes = minutes.to_i < 5 ? 5 : minutes
         every(minutes * 60) do |timer|
           if user_info(user_id, "reminder_id") != reminder_id || !user_info(user_id, "auth")
             timer.stop
@@ -287,7 +288,6 @@ module Lita
         user_id = payload["user"]["id"]
         submission = payload["submission"]
         reminder_id = SecureRandom.uuid
-        minutes = submission["reminder_minutes"].to_i < 5 ? 5 : submission["reminder_minutes"]
         if submission["reminder_start"].to_i > submission["reminder_end"].to_i
           send_message_to_user_by_id(
             user_id,
@@ -297,7 +297,7 @@ module Lita
           return
         end
 
-        save_user_info(user_id, "reminder_minutes", minutes)
+        save_user_info(user_id, "reminder_minutes", submission["reminder_minutes"])
         save_user_info(user_id, "reminder_start", submission["reminder_start"])
         save_user_info(user_id, "reminder_end", submission["reminder_end"])
         save_user_info(user_id, "reminder_if_tracking", submission["reminder_if_tracking"])
