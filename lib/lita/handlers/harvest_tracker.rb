@@ -17,6 +17,7 @@ module Lita
       route(/#{PREFIX}project\slist/, :send_list_of_assignments, command: true)
       route(/#{PREFIX}start\stracking/, :start_tracking, command: true)
       route(/#{PREFIX}status/, :get_status, command: true)
+      route(/(.+)/, :set_notes, command: true)
 
       http.get "/harvest-tracker-authorize", :login_cb
 
@@ -328,15 +329,14 @@ module Lita
       end
 
       def start_tracking(response)
-        payload = OpenStruct.new(response)
-        user_id = payload["user"]["id"]
-
+        user_id = response&.user&.id || response["user"]["id"]
         start_tracking_cb(user_id)
       end
 
       def start_tracking_cb(user_id)
         delete_user_info(user_id, 'selected_project')
         delete_user_info(user_id, 'selected_task')
+        delete_user_info(user_id, 'selected_notes')
         blocks = assignments_blocks(user_id)
         @slack_client.chat_postMessage(
           channel: user_id,
@@ -348,6 +348,7 @@ module Lita
       def assignments_blocks(user_id)
         selected_project = user_info(user_id, 'selected_project')
         selected_task = user_info(user_id, 'selected_task')
+        selected_notes = user_info(user_id, 'selected_notes')
         projects = assignments_options(user_id)
         blocks = [
           text_block("*Empieza a trackear en Harvest!*"),
@@ -361,6 +362,10 @@ module Lita
         end
 
         if selected_task
+          blocks.push(text_block("Descripción?"))
+        end
+
+        if selected_notes
           blocks.push(
             "type": "actions",
             "block_id": "confirm_start_tracking_block",
@@ -379,6 +384,19 @@ module Lita
         blocks
       end
 
+      def set_notes(response)
+        if user_info(response.user.id, "waiting_for_notes")
+          delete_user_info(response.user.id, "waiting_for_notes")
+          save_user_info(response.user.id, "selected_notes", response.message.body)
+          blocks = assignments_blocks(response.user.id)
+
+          http.post(
+            user_info(response.user.id, "tracking_response_url"),
+            { blocks: blocks }.to_json
+          )
+        end
+      end
+
       def tracking_cb(payload)
         action = payload["actions"][0]
         case action["block_id"]
@@ -389,6 +407,8 @@ module Lita
         when "task_select_block"
           selected_task = action["selected_option"]&.dig("value")
           save_user_info(payload["user"]["id"], 'selected_task', selected_task)
+          save_user_info(payload["user"]["id"], 'tracking_response_url', payload["response_url"])
+          save_user_info(payload["user"]["id"], "waiting_for_notes", true)
         end
 
         response_url = payload["response_url"]
@@ -403,7 +423,8 @@ module Lita
       def confirm_start_tracking_cb(payload)
         project_id = user_info(payload["user"]["id"], 'selected_project')
         task_id = user_info(payload["user"]["id"], 'selected_task')
-        time_entry = create_time_entry(payload["user"]["id"], project_id, task_id)
+        notes = user_info(payload["user"]["id"], 'selected_notes')
+        time_entry = create_time_entry(payload["user"]["id"], project_id, task_id, notes)
 
         message = "Has empezado a trackear exitosamente en: "\
                   "*#{time_entry['client']['name']} - #{time_entry['project']['name']} "\
@@ -455,8 +476,9 @@ module Lita
         value = JSON.parse(payload["actions"][0]["value"])
         task_id = value["task_id"]
         project_id = value["project_id"]
+        notes = value["notes"]
 
-        time_entry = create_time_entry(payload["user"]["id"], project_id, task_id)
+        time_entry = create_time_entry(payload["user"]["id"], project_id, task_id, notes)
 
         message = "Has empezado a trackear exitosamente en: "\
                   "*#{time_entry['client']['name']} - #{time_entry['project']['name']} "\
@@ -553,7 +575,8 @@ module Lita
                           "action_id": "time_entry_continue_button",
                           "value": {
                             task_id: time_entry["task"]["id"].to_s,
-                            project_id: time_entry["project"]["id"].to_s
+                            project_id: time_entry["project"]["id"].to_s,
+                            notes: time_entry["notes"]
                           }.to_json
                         }
                       end
@@ -562,8 +585,10 @@ module Lita
             "type": "section",
             "text": {
               "type": "mrkdwn",
-              "text": "#{time_entry['client']['name']} - #{time_entry['project']['name']} " \
-              "(#{time_entry['task']['name']}) - #{time_entry['hours']} Horas"
+              "text": "*#{time_entry['client']['name']} - #{time_entry['project']['name']} " \
+              "(#{time_entry['task']['name']})* \n" \
+              "#{time_entry['notes'] ? time_entry['notes'] + "\n" : ''}" \
+              "#{time_entry['hours']} Horas"
             },
             "accessory": accessory
           }
@@ -650,11 +675,12 @@ module Lita
         response["project_assignments"]
       end
 
-      def create_time_entry(user_id, project_id, task_id)
+      def create_time_entry(user_id, project_id, task_id, notes = "")
         payload = {
           project_id: project_id,
           task_id: task_id,
-          spent_date: Time.current.iso8601
+          spent_date: Time.current.iso8601,
+          notes: notes
         }
 
         response = api_post("https://api.harvestapp.com/v2/time_entries", user_id, payload)
