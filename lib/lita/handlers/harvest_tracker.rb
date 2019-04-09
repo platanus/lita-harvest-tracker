@@ -3,6 +3,7 @@ require 'json'
 require 'slack-ruby-client'
 require 'time'
 require 'ostruct'
+require 'active_support/all'
 
 module Lita
   module Handlers
@@ -50,23 +51,26 @@ module Lita
       end
 
       def create_timer(user_id, minutes, reminder_id)
+        return if minutes == "0"
+
         reminder_if_tracking = user_info(user_id, "reminder_if_tracking") == "si"
         reminder_start = user_info(user_id, "reminder_start")
         reminder_end = user_info(user_id, "reminder_end")
-        return if minutes == "0"
+        minutes = minutes.to_i < 5 ? 5 : minutes.to_i
 
-        minutes = minutes.to_i < 5 ? 5 : minutes
+        time_zone = ActiveSupport::TimeZone.new(slack_timezone(user_id))
+
         every(minutes * 60) do |timer|
           if user_info(user_id, "reminder_id") != reminder_id || !user_info(user_id, "auth")
             timer.stop
           end
           next if !reminder_if_tracking && tracking?(user_id)
-          next if Time.current.saturday? || Time.current.sunday?
+          next if time_zone.now.saturday? || time_zone.now.sunday?
 
-          time_start = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_start))
-          time_end = Time.parse(Time.current.strftime('%Y-%m-%d ' + reminder_end))
+          time_start = time_zone.parse(time_zone.now.strftime('%Y-%m-%d ' + reminder_start))
+          time_end = time_zone.parse(time_zone.now.strftime('%Y-%m-%d ' + reminder_end))
 
-          status(user_id) if time_start.to_i < Time.current.to_i && time_end.to_i > Time.current.to_i
+          status(user_id) if time_start.past? && time_end.future?
         end
       end
 
@@ -228,11 +232,14 @@ module Lita
       end
 
       def start_setup_dialog_cb(payload)
-        server_time = Time.current.strftime('%H:%M')
-        reminder_minutes = user_info(payload["user"]["id"], "reminder_minutes") || 60
-        reminder_start = user_info(payload["user"]["id"], "reminder_start") || '09:00'
-        reminder_end = user_info(payload["user"]["id"], "reminder_end") || '18:00'
-        reminder_if_tracking = user_info(payload["user"]["id"], "reminder_if_tracking") || 'no'
+        user_id = payload["user"]["id"]
+        reminder_minutes = user_info(user_id, "reminder_minutes") || 60
+        reminder_start = user_info(user_id, "reminder_start") || '09:00'
+        reminder_end = user_info(user_id, "reminder_end") || '18:00'
+        reminder_if_tracking = user_info(user_id, "reminder_if_tracking") || 'no'
+
+        time_zone = ActiveSupport::TimeZone.new(slack_timezone(user_id))
+        local_time = time_zone
 
         @slack_client.dialog_open(
           trigger_id: payload["trigger_id"],
@@ -254,14 +261,16 @@ module Lita
                 label: "¿Desde qué hora te debería empezar a recordar?",
                 value: reminder_start,
                 name: "reminder_start",
-                hint: "La hora del servidor es: #{server_time}"
+                hint: "Zona horaria: #{time_zone.name} (#{time_zone.now.strftime('%H:%M')}). "\
+                      "Puedes cambiarla en la configuración de Slack"
               },
               {
                 type: "text",
                 label: "¿A qué hora te debería dejar de recordar?",
                 value: reminder_end,
                 name: "reminder_end",
-                hint: "La hora del servidor es: #{server_time}"
+                hint: "Zona horaria: #{time_zone.name} (#{time_zone.now.strftime('%H:%M')}). "\
+                      "Puedes cambiarla en la configuración de Slack"
               },
               {
                 type: "select",
@@ -730,6 +739,14 @@ module Lita
         }
 
         http_headers
+      end
+
+      def slack_timezone(user_id)
+        response = @slack_client.users_info(
+          user: user_id
+        )
+
+        response["user"]["tz"]
       end
     end
 
