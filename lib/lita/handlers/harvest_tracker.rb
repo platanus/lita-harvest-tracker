@@ -52,12 +52,12 @@ module Lita
       end
 
       def create_timer(user_id, minutes, reminder_id)
-        return if minutes == "0"
+        return if minutes.zero?
 
         reminder_if_tracking = user_info(user_id, "reminder_if_tracking") == "si"
         reminder_start = user_info(user_id, "reminder_start")
         reminder_end = user_info(user_id, "reminder_end")
-        minutes = minutes.to_i < 5 ? 5 : minutes.to_i
+        minutes = minutes < 5 ? 5 : minutes
 
         time_zone = ActiveSupport::TimeZone.new(slack_timezone(user_id))
 
